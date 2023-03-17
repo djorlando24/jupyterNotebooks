@@ -38,31 +38,65 @@ from dd_xrf_functions import *
 import numpy as np
 import h5py
 
+
+'''
+    Convert the raw beamline Y position to a useful coordinate
+    (relative to the valve height).
+        
+    This was determined based on the dummy scans of an empty can, from the previous notebook
+'''
+def yTransform(y):
+    return 75-y
+
+'''
+    Calculate absorption through canister wall and rectangular external plastic parts of canister holder
+    for transverse co-ordinates x with can aligned at center x0, inner radius ri, wall thickness thk.
+    
+    Assuming by convention all lengths in mm, and mu is attenuation length in _cm_
+'''
+def canisterWallExtFn(x,x0,ri,thkCan,muCan, thkExtGradient, thkExtConst, muExt, riValve):
+    
+    if (ri<0) | (muCan<0) | (thkExtConst<0) | (muExt<0) | (riValve<0): return 0
+    if (np.abs(x0)>5) | (np.abs(thkExtGradient)>5) | (np.abs(thkCan)>1.5) | (riValve>4): return 0
+    
+    return secantAnnulus(x-x0,ri,ri+thkCan)*muCan*0.1 +\
+           secant(x-x0,riValve)*muCan*0.1 +\
+           (thkExtGradient*(x-x0) + thkExtConst - secantAnnulus(x-x0,ri,ri+thkCan))*muExt*0.1
+
+'''
+    Apply signal trapping corrections in the x,z plane. Assuming a cylindrical canister and uniform external
+    environment with a uniform internal liquid density (but nonuniform fluorescing tracer concentration
+    possible).
+    
+    Can handle n-dimensional array data by flattening everything and assessing each sample one at a time.
+'''
 def applySignalTrapping(x_All,y_All,fluor_All,pin_All,I0_All,\
                         propellant = '134',ethMassFrac=0.08, tracer='I', line='a'):
-    '''
-        Apply signal trapping corrections in the x,z plane. Assuming a cylindrical canister and uniform external environment
-        with a uniform internal liquid density (but nonuniform fluorescing tracer concentration possible).
-        
-        Can handle n-dimensional array data by flattening everything and assessing each sample one at a time.
-    '''
+    
         
     # Constants determined by fitting to empty canister data.
     x0=0                 # x-alignment of center of the canister.
     thkCan=0.706982      # canister wall thickness [mm]
     muCan=1.732022       # attenuation/rho of the canister wall at incident beam energy [1/cm]
-    muExt=0.455318       # attenuation/rho of the external components 
+    muExt=0.455318       # attenuation/rho of the external components
     
     # Functions that depend on y.
     thkExtGradient = lambda y: 0.2   # attenuation gradient in x of the external environment [1/cm/mm]
     thkExtConst = lambda y: 75.      # attenuation average of the external environment [1/cm]
-    ri = lambda y: 10.14               # canister inner wall radius
-    riValve = lambda y: 0.           # effective radius of the metering valve or canister dome part [mm]
+    
+    # canister inner wall radius
+    ri = lambda y: (10.14)*(y>=0) + (3.38)*(y<0)
+    
+    # effective radius of the metering valve or canister dome part [mm]
+    riValve = lambda y: (-0.1444*y + 4.275)*(y<=14)*(y>=6.75) + (3.25)*(y<6.75)
+    
+    # Density of fluid at lab temperature (20degC) [kg/m3]
+    rhoFluid = {'134':1225.3, '152':911.97, '1234E':1293., 'EtOH':789.2}
     
     # X-ray constants
     
     # attenuation/rho of the liquid formulation at the incident energy [1/cm]
-    muFluid = {'134':0.328336,'152':0.222837,'1234E':0.271999,'EtOH':0.186543}   
+    muFluid = {'134':0.328336,'152':0.222837,'1234E':0.271999,'EtOH':0.186543}
     
     # attenuation/rho of the fluorescing tracer at the incident energy [1/cm]
     muTracer  = {'I':19.4738,'Ba':12.933*137.327/233.38}
@@ -89,9 +123,10 @@ def applySignalTrapping(x_All,y_All,fluor_All,pin_All,I0_All,\
     solidDet = np.pi*(15**2)/(rDet**2) # approximate solid angle of the detector relative to canister axis.
     
     # Calculation fluid mixture absorption, accounting for any density differences.
-    muFluidMix = muFluid[propellant]*(1-ethMassFrac) + muFluid['EtOH']*ethMassFrac
+    rhoMix = (rhoFluid[propellant]*(1-ethMassFrac) + rhoFluid['EtOH']*ethMassFrac)*1e-3 # g/cm^3
+    muFluidMix = muFluid[propellant]*(1-ethMassFrac) + muFluid['EtOH']*ethMassFrac # 1/cm
     muFluidMix_emission = muFluid_Ka[tracer][propellant]*(1-ethMassFrac) +\
-                          muFluid_Ka[tracer]['EtOH']*ethMassFrac
+                          muFluid_Ka[tracer]['EtOH']*ethMassFrac # 1/cm
     
     
     # Setup arrays
@@ -109,7 +144,7 @@ def applySignalTrapping(x_All,y_All,fluor_All,pin_All,I0_All,\
         incidentAbsModel = canisterWallExtFn(x[i],0,ri(y[i]),thkCan,muCan, thkExtGradient(y[i]),\
                                             thkExtConst(y[i]), muExt, riValve(y[i]))
         
-        # Determine path length of incident beam thru the fluid in the can. 
+        # Determine path length of incident beam thru the fluid in the can.
         # Missing step here: Assume full instead of using Pin to check full/empty!
         fluidPathLength = secant(x[i],r=ri(y[i]))
     
@@ -141,24 +176,37 @@ def applySignalTrapping(x_All,y_All,fluor_All,pin_All,I0_All,\
         correction[i]=np.exp(- attenLengthEmission_fluid - attenLengthEmission_can - attenLengthEmission_air )
         correction[i]*=fluxAtFocus
     
-    return correction.reshape(fluor_All.shape)
+    return correction.reshape(fluor_All.shape), rhoMix
 
+'''
+    Read HDF file and load scans for fluorescence.
+    Don't apply signal trapping corrections yet.
+'''
+def readFluorescence(filename, fluorLine='I Ka', scanType='HorizontalScans',\
+                     positionDecimalPlaces=3, timeDecimalPlaces=0, fillValue=np.nan):
 
-def readFluorescence(filename, fluorLine='I Ka'):
+    readerFunction =readHorizontalScans
+    
     with h5py.File(filename,'r') as H:
-        
+    
+        # Check for existence of group
+        if not scanType in H: return None,None,None,None,None,None
+    
         # Read data.
-        x,y,t,zF = readHorizontalScans( H['HorizontalScans/x'], H['HorizontalScans/y'],\
-                                        H['HorizontalScans/shotCounter'],\
-                                        H['HorizontalScans/%s/integral' % fluorLine] )
+        x,y,t,zF = readerFunction( H['%s/x' % scanType], H['%s/y' % scanType],\
+                                        H['%s/shotCounter' % scanType],\
+                                        H['%s/%s/integral' % (scanType,fluorLine)],\
+                                        positionDecimalPlaces, timeDecimalPlaces, fillValue )
         
-        x,y,t,zP = readHorizontalScans( H['HorizontalScans/x'], H['HorizontalScans/y'],\
-                                        H['HorizontalScans/shotCounter'],\
-                                        H['HorizontalScans/pinDiode'] )
+        x,y,t,zP = readerFunction( H['%s/x' % scanType], H['%s/y' % scanType],\
+                                        H['%s/shotCounter' % scanType],\
+                                        H['%s/pinDiode' % scanType],\
+                                        positionDecimalPlaces, timeDecimalPlaces, fillValue )
 
-        x,y,t,I0 = readHorizontalScans( H['HorizontalScans/x'], H['HorizontalScans/y'],\
-                                        H['HorizontalScans/shotCounter'],\
-                                        H['HorizontalScans/diamondMonitor'] )
+        x,y,t,I0 = readerFunction( H['%s/x' % scanType], H['%s/y' % scanType],\
+                                        H['%s/shotCounter' % scanType],\
+                                        H['%s/diamondMonitor' % scanType],\
+                                        positionDecimalPlaces, timeDecimalPlaces, fillValue )
 
         # Calculations
         pinDiode = -np.log(zP/I0)

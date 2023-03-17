@@ -40,6 +40,8 @@ import numpy as np
 import h5py
 import scipy.optimize, scipy.integrate, scipy.interpolate
 
+
+
 def mergeInterpolateScans(xData, yData, zData, positionDecimalPlaces=3):
     '''
         Take a set of HDF objects and stitch together using linear interpolation
@@ -87,7 +89,7 @@ def mergeInterpolateScans(xData, yData, zData, positionDecimalPlaces=3):
 
     return x,y,z
 
-def readHorizontalScans(xData, yData, tData, zData, positionDecimalPlaces=3, timeDecimalPlaces=0):
+def readHorizontalScans(xData, yData, tData, zData, positionDecimalPlaces=3, timeDecimalPlaces=0, fillValue=np.nan):
     '''
         Take a set of HDF objects as repeated scans in time and output for horizontal scans a 2D matrix
         of (x,y,time).
@@ -101,8 +103,13 @@ def readHorizontalScans(xData, yData, tData, zData, positionDecimalPlaces=3, tim
         zAll.extend(zData[k][...].ravel())
     
     # Find unique values for x and y across all data sets.
-    xp = np.unique(np.round(xAll,positionDecimalPlaces))
-    yp = np.unique(np.round(yAll,positionDecimalPlaces))
+    if isinstance(positionDecimalPlaces,tuple):
+        xDecimal, yDecimal = positionDecimalPlaces
+    else:
+        xDecimal = positionDecimalPlaces
+        yDecimal = positionDecimalPlaces
+    xp = np.unique(np.round(xAll,xDecimal))
+    yp = np.unique(np.round(yAll,yDecimal))
     tp = np.unique(np.round(tAll,timeDecimalPlaces))
 
     x, y, t = np.meshgrid(xp, yp, tp, indexing='ij')
@@ -125,7 +132,8 @@ def readHorizontalScans(xData, yData, tData, zData, positionDecimalPlaces=3, tim
         yTest = (y>=yRange[0])&(y<=yRange[1]) # skip exact y check for horizontal scans
         tTest = (t>=tRange[0])&(t<=tRange[1])
         mask[xTest&yTest&tTest] += 1
-    z[mask==0] = np.nan
+    if fillValue is not None:
+        z[mask==0] = fillValue
     
     return x,y,t,z
 
