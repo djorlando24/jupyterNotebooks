@@ -178,6 +178,7 @@ def applySignalTrapping(x_All,y_All,fluor_All,pin_All,I0_All,\
     
     return correction.reshape(fluor_All.shape), rhoMix
 
+
 '''
     Read HDF file and load scans for fluorescence.
     Don't apply signal trapping corrections yet.
@@ -186,6 +187,11 @@ def readFluorescence(filename, fluorLine='I Ka', scanType='HorizontalScans',\
                      positionDecimalPlaces=3, timeDecimalPlaces=0, fillValue=np.nan):
 
     readerFunction =readHorizontalScans
+    timeVar = 'shotCounter'
+    if ('BaSO4' in filename):
+        timeVar = 'shakeTimer'
+        #readerFunction = readTimeScans
+        
     
     with h5py.File(filename,'r') as H:
     
@@ -194,28 +200,30 @@ def readFluorescence(filename, fluorLine='I Ka', scanType='HorizontalScans',\
     
         # Read data.
         x,y,t,zF = readerFunction( H['%s/x' % scanType], H['%s/y' % scanType],\
-                                        H['%s/shotCounter' % scanType],\
+                                        H['%s/%s' % (scanType,timeVar)],\
                                         H['%s/%s/integral' % (scanType,fluorLine)],\
                                         positionDecimalPlaces, timeDecimalPlaces, fillValue )
         
         x,y,t,zP = readerFunction( H['%s/x' % scanType], H['%s/y' % scanType],\
-                                        H['%s/shotCounter' % scanType],\
+                                        H['%s/%s' % (scanType,timeVar)],\
                                         H['%s/pinDiode' % scanType],\
                                         positionDecimalPlaces, timeDecimalPlaces, fillValue )
 
         x,y,t,I0 = readerFunction( H['%s/x' % scanType], H['%s/y' % scanType],\
-                                        H['%s/shotCounter' % scanType],\
+                                        H['%s/%s' % (scanType,timeVar)],\
                                         H['%s/diamondMonitor' % scanType],\
                                         positionDecimalPlaces, timeDecimalPlaces, fillValue )
 
         # Calculations
         pinDiode = -np.log(zP/I0)
         
-        # Outlier masking
-        for i in range(x.shape[1]):
-            for j in range(x.shape[2]):
-                dz = np.diff(zF[...,i,j])
-                dz = np.hstack((0, dz))
-                zF[np.abs(dz)>100,i,j] = np.nan # mask large sudden changes in level
+        # Outlier masking for big horizontal scans
+        if len(x.shape) >= 3:
+            for i in range(x.shape[1]):
+                for j in range(x.shape[2]):
+                    dz = np.diff(zF[...,i,j])
+                    dz = np.hstack((0, dz))
+                    # mask large sudden changes in level
+                    zF[np.abs(dz)>100,i,j] = np.nan
 
     return x,y,t,zP,I0,zF
